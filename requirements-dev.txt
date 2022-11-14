@@ -1,0 +1,4 @@
+cython
+wheel
+twine
+python-idzip>=0.3.6
