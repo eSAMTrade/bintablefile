@@ -14,5 +14,11 @@ This class just interfaces the reading/writing of the file through a `list` inte
 - The footprint of the file is quite small as the data is binary encoded.
 - It can be used with a seek-able compression format without losing efficiency on indexing, like [idzip](https://pypi.org/project/python-idzip/) 
 
+### Installation
+```bash
+pip install bintablefile
+```
+The library can be found on [PyPi](https://pypi.org/project/bintablefile/): https://pypi.org/project/bintablefile/
+
  
 **Note**: We release directly v2.0 as v1.0 was used just internally and was not released to PyPI. The major improvement of V2 is a full-featured header, that allows to store metadata about the table, as well as store the number of records for ReadOnly compression formats like `idzip`.
