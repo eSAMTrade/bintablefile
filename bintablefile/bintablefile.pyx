@@ -1,7 +1,6 @@
 import gzip
 import io
 import itertools
-import json
 import struct
 from decimal import Decimal
 from pathlib import Path
@@ -16,14 +15,23 @@ from typing import (
     TypeVar,
     Dict,
     Type,
-    NamedTuple, )
+    NamedTuple, List, )
 
+import cython
+import msgpack
 import numpy as np
 import pandas as pd
+from libc.stdlib cimport malloc
+from libc.string cimport memcpy
 from pydantic import BaseModel, Extra, validator
 from pydantic import PositiveInt, conint, validate_arguments
 from pyxtension import validate
 
+try:
+    import typing
+    import dataclasses
+except ImportError:
+    pass  # The modules don't actually have to exists for Cython to use them as annotations
 _K = TypeVar('_K')
 RecType = TypeVar("RecType", int, Decimal, float, bool, np.int64, np.float64, np.bool_)
 RecTypeType = Union[Type[int], Type[float], Type[Decimal], Type[bool], Type[np.int64], Type[np.float64], Type[np.bool_]]
@@ -41,21 +49,66 @@ def open_by_extension(file: Path, *args, **kwargs) -> IO:
         return open(file, *args, **kwargs)
 
 
-class Header(BaseModel):
-    columns: Tuple[str, ...]
-    types: Tuple[RecTypeType, ...]
-    record_size: PositiveInt
-    records_nr: conint(ge=-1)  # by convention, if it's -1, then the #records will be estimated from filesize
-    metadata: Optional[Dict[str, Any]] = None
+class _RecordStructure(BaseModel):
+    start_idxes: np.ndarray  # starts of the item within the record
+    sizes: np.ndarray  # size of every item of the record
+    biggest_item_size: PositiveInt  # the size of the biggest item of the record
 
     # annotations are necessary for Cython to work
     # https://stackoverflow.com/questions/56079419/using-dataclasses-with-cython
     __annotations__ = {
-        'columns':     Tuple[str, ...],
-        'types':       Tuple[RecTypeType, ...],
-        'record_size': PositiveInt,
-        'records_nr':  conint(ge=-1),  # by convention, if it's -1, then the #records will be estimated from filesize
-        'metadata':    Optional[Dict[str, Any]],
+        'start_idxes':       np.ndarray,
+        'sizes':             np.ndarray,
+        'biggest_item_size': PositiveInt,
+    }
+
+    class Config:
+        allow_mutation = False
+        extra = Extra.forbid
+        arbitrary_types_allowed = True
+
+    @staticmethod
+    def from_record_format(record_format: Tuple[RecTypeType, ...]) -> '_RecordStructure':
+        nr_columns = len(record_format)
+        start_idxes = np.empty(shape=nr_columns, dtype=np.int32)
+        sizes = np.empty(nr_columns, dtype=np.int32)
+        index: cython.int = 0
+        cdef int biggest_item_size = 0
+        for i in range(nr_columns):
+            _type = record_format[i]
+            start_idxes[i] = index
+            if issubclass(_type, bool):
+                sz = 1
+            elif issubclass(_type, int):
+                sz = 8
+            elif issubclass(_type, float):
+                sz = 8
+            elif issubclass(_type, Decimal):
+                sz = 9
+            else:
+                raise ValueError(f"Unknown type [{_type!s}] for record")
+            sizes[i] = sz
+            index += sz
+            if sz > biggest_item_size:
+                biggest_item_size = sz
+        return _RecordStructure(start_idxes=start_idxes, sizes=sizes, biggest_item_size=biggest_item_size)
+
+
+class _Header(BaseModel):
+    columns: Tuple[str, ...]
+    types: Tuple[RecTypeType, ...]
+    record_size: PositiveInt
+    records_nr: conint(ge=-1)  # by convention, if it's -1, then the #records will be estimated from filesize
+    metadata_size: conint(ge=0)
+
+    # annotations are necessary for Cython to work
+    # https://stackoverflow.com/questions/56079419/using-dataclasses-with-cython
+    __annotations__ = {
+        'columns':       Tuple[str, ...],
+        'types':         Tuple[RecTypeType, ...],
+        'record_size':   PositiveInt,
+        'records_nr':    conint(ge=-1),  # by convention, if it's -1, then the #records will be estimated from filesize
+        'metadata_size': conint(ge=0),
     }
 
     @validator('types')
@@ -82,16 +135,14 @@ class Header(BaseModel):
         record_size = struct.pack(size_format, record_len)
         records_nr = struct.pack("<q", self.records_nr)  # long long as it might be -1
 
-        metadata = self.metadata or {}
-        encoded_metadata = json.dumps(metadata).encode('utf-8')
-        metadata_size = struct.pack(size_format, len(encoded_metadata))
+        metadata_size = struct.pack(size_format, self.metadata_size)
         encoded_columns_size = struct.pack(size_format, len(encoded_columns))
         encoded_format_size = struct.pack(size_format, len(encoded_format))
 
         header = (
                 signature + binary_format + version + record_size + records_nr +
                 encoded_columns_size + encoded_format_size + metadata_size +
-                encoded_columns + encoded_format + encoded_metadata
+                encoded_columns + encoded_format
         )
 
         return header
@@ -136,17 +187,25 @@ class BinTableFile(list):
             self._columns = columns
             self._record_format = record_format
             self._metadata = metadata
+            if metadata is not None:
+                self._encoded_metadata = msgpack.packb(metadata, use_bin_type=True)
+                metadata_size = len(self._encoded_metadata)
+            else:
+                self._encoded_metadata = b''
+                metadata_size = 0
             record_size = self._compute_record_size_in_bytes(self._record_format)
-            self._header = Header(columns=columns, types=record_format, record_size=record_size,
-                                  records_nr=records_nr, metadata=metadata)
+            self._header = _Header(columns=columns, types=record_format, record_size=record_size,
+                                   records_nr=records_nr, metadata_size=metadata_size)
             self._header_data = self._header.encode()
             self._header_sz = len(self._header_data)
         else:
-            self._header, self._header_sz = self._read_header(fpath, opener)
+            self._header, self._header_sz, self._header_data = self._read_header(fpath, opener)
             self._columns = self._header.columns
             self._record_format = self._header.types
-            self._metadata = self._header.metadata
-
+            self._encoded_metadata = None
+            self._metadata = None
+        self._record_structure = _RecordStructure.from_record_format(self._record_format)
+        self._data_start_idx = self._header_sz + self._header.metadata_size
         self._format = self._build_pack_format(self._record_format)
 
         self._namedtuple_class_value: Optional[Type[NamedTuple]] = None
@@ -159,7 +218,7 @@ class BinTableFile(list):
         self._buffer = bytearray()
 
     @staticmethod
-    def _read_header(fpath: Path, opener: Any = gzip.open) -> Tuple[Header, int]:
+    def _read_header(fpath: Path, opener: Any = gzip.open) -> Tuple[_Header, int, bytes]:
         with opener(fpath, mode="rb") as file:
             header_data = file.read(BinTableFile.BUF_SZ)
             signature = header_data[:4].decode(encoding="ascii")
@@ -174,7 +233,7 @@ class BinTableFile(list):
             )
             validate(version == BinTableFile.VERSION)
 
-            header_sz = (VAR_H_START + name_header_sz + type_header_sz + meta_sz)
+            header_sz = (VAR_H_START + name_header_sz + type_header_sz)
             if len(header_data) < header_sz:
                 rest_buf = file.read(header_sz - len(header_data))
                 header_data += rest_buf
@@ -193,10 +252,9 @@ class BinTableFile(list):
 
             validate(len(columns) == len(decoded_types), "#columns != #types", ValueError)
 
-            metadata = json.loads(header_data[end_index: end_index + meta_sz])
-            header = Header(columns=columns, types=decoded_types, record_size=record_size,
-                            records_nr=records_nr, metadata=metadata)
-            return header, header_sz
+            header = _Header(columns=columns, types=decoded_types, record_size=record_size,
+                             records_nr=records_nr, metadata_size=meta_sz)
+            return header, header_sz, header_data
 
     @property
     def columns(self) -> Tuple[str]:
@@ -216,7 +274,17 @@ class BinTableFile(list):
         return self._record_format
 
     @property
-    def metadata(self) -> Dict[str, Any]:
+    def metadata(self) -> Optional[Dict[str, Any]]:
+        if self._encoded_metadata is None:
+            if self._header.metadata_size == 0:
+                self._encoded_metadata = b''
+            else:
+                with self._opener(self._fpath, mode="rb") as file:
+                    file.seek(self._header_sz)
+                    self._encoded_metadata = file.read(self._header.metadata_size)
+                    validate(len(self._encoded_metadata) == self._header.metadata_size, "Metadata size mismatch",
+                             ValueError)
+                    self._metadata = msgpack.unpackb(self._encoded_metadata, raw=False)
         return self._metadata
 
     @staticmethod
@@ -295,7 +363,7 @@ class BinTableFile(list):
         with self._opener(self._fpath, mode="rb") as f:
             self._fh = f
             # Pass header
-            f.read(self._header_sz)
+            f.seek(self._data_start_idx)
             for rec_bytes in self._buffered_read_records(f):
                 next_record = self.bytes_as_record(rec_bytes)
                 yield next_record
@@ -342,22 +410,32 @@ class BinTableFile(list):
             step = 1
         if start is None:
             start = 0
-
+        record_size:cython.int = self._record_size
         with self._opener(self._fpath, mode="rb") as f:
             self._fh = f
-            seek_pos = self._record_size * start + self._header_sz
+            seek_pos = record_size * start + self._header_sz
             if stop is None:
                 stop = self._get_len(f)
             elif stop < 0:
                 stop += self._get_len(f)
             f.seek(seek_pos, io.SEEK_SET)
+            remained_records: cython.int = stop - start
+            i: cython.int = 0
+            optimal_buf_n_rec: cython.int = 1 + self._buf_size // record_size
 
-            for i, rec_bytes in enumerate(self._buffered_read_records(f)):
-                if i < stop - start:
+            max_buf: cython.int
+            while remained_records > 0:
+                if optimal_buf_n_rec > remained_records:
+                    optimal_buf_n_rec = remained_records
+                max_buf = record_size * optimal_buf_n_rec
+                remained_records -= optimal_buf_n_rec
+                buffer = f.read(max_buf)
+                col_nas = self._decode_buffer_to_nas(data=buffer)
+                for rec in zip(*col_nas):
                     if i % step == 0:
-                        yield self.bytes_as_record(rec_bytes)
-                else:
-                    break
+                        yield tuple(rec)
+                    i += 1
+
             self._fh = None
 
     def __len__(self) -> int:
@@ -407,13 +485,15 @@ class BinTableFile(list):
         validate(self._header.records_nr == -1, "Cannot write to a file with fixed length")
         with self._opener(self._fpath, mode=mode) as f:
             if do_add_header:
-                validate(self._header_data, "When creating new BinaryRecordFile, you must specify header")
                 f.write(self._header_data)
+                validate(self._encoded_metadata is not None,
+                         f"File {self._fpath!s} can't be found, but expecting to exist")
+                f.write(self._encoded_metadata)
             f.write(self._buffer)
         self._buffer = bytearray()
 
     @staticmethod
-    def _build_pack_format(record_format: Tuple[RecTypeType, ...]):
+    def _build_pack_format(record_format: Tuple[RecTypeType, ...]) -> str:
         format = "<"
         for _type in record_format:
             if issubclass(_type, (bool, np.bool_)):
@@ -428,9 +508,17 @@ class BinTableFile(list):
                 raise ValueError(f"Unknown type [{_type!s}] for record")
         return format
 
-    def as_df(self) -> pd.DataFrame:
-
-        return pd.DataFrame(data=list(self), columns=self._columns, index=None)
+    @staticmethod
+    def _get_np_pack_format(_type: RecTypeType) -> str:
+        if issubclass(_type, (bool, np.bool_)):
+            format = "?"
+        elif issubclass(_type, (int, np.int64)):
+            format = "<i8"
+        elif issubclass(_type, (float, np.float64)):
+            format = "<f8"
+        else:
+            raise ValueError(f"Unknown type [{_type!s}] for record")
+        return format
 
     @classmethod
     @validate_arguments(config=dict(arbitrary_types_allowed=True))
@@ -446,11 +534,20 @@ class BinTableFile(list):
         builtin_record_format = tuple(cls.BUILTIN_TYPES_MAP.get(t, t) for t in record_format)
         record_size = cls._compute_record_size_in_bytes(builtin_record_format)
         records_nr = len(df.index)
-        header = Header(columns=columns, types=builtin_record_format, record_size=record_size,
-                        records_nr=records_nr, metadata=metadata)
+        if metadata is not None:
+            encoded_metadata = msgpack.packb(metadata, use_bin_type=True)
+            metadata_size = len(encoded_metadata)
+        else:
+            encoded_metadata = b''
+            metadata_size = 0
+        record_size = BinTableFile._compute_record_size_in_bytes(record_format)
+
+        header = _Header(columns=columns, types=builtin_record_format, record_size=record_size,
+                         records_nr=records_nr, metadata_size=metadata_size)
         header_data = header.encode()
         with opener(fpath, mode="wb") as f:
             f.write(header_data)
+            f.write(encoded_metadata)
             data = df.to_numpy()
             records_nr = len(data)
             i = 0
@@ -461,3 +558,67 @@ class BinTableFile(list):
                 f.write(struct.pack(chunk_format, *chunk.flatten()))
                 i += chunk_size
             f.flush()
+
+    def as_df(self) -> pd.DataFrame:
+        # read whole file to memory
+        validate(self._fh is None, f"The BinaryRecordFile {self._fpath!s} is already opened.")
+        with self._opener(self._fpath, mode="rb") as f:
+            self._fh = f
+            # Pass header
+            f.seek(self._data_start_idx)
+            data = f.read()
+            if self._header.records_nr != -1:
+                records_nr = self._header.records_nr
+                validate(len(data) == records_nr * self._record_size, "The file is corrupted", IOError)
+            else:
+                records_nr = len(data) // self._record_size
+
+        nr_columns: cython.int = len(self._columns)
+        col_idx: cython.int
+        col_nas = self._decode_buffer_to_nas(data)
+        df = pd.DataFrame(index=None)
+        for col_idx in range(nr_columns):
+            df[self._columns[col_idx]] = col_nas[col_idx]
+        return df
+
+    def _decode_buffer_to_nas(self, data: bytes) -> List[np.ndarray]:
+        index: cython.int = 0
+        item_sz: cython.int
+        col_idx: cython.int
+        cdef biggest_item_size = self._record_structure.biggest_item_size
+        sizes: np.ndarray = self._record_structure.sizes
+        start_idxes: np.ndarray = self._record_structure.start_idxes
+        records_nr: cython.int = len(data) // self._record_size
+        nr_columns: cython.int = len(self._columns)
+        cdef unsigned char * c_col_bytes = <unsigned char *> malloc(biggest_item_size * records_nr)
+        col_nas: List[np.ndarray] = []
+        for col_idx in range(nr_columns):
+            item_sz = sizes[col_idx]
+            _populate_column(c_col_bytes=c_col_bytes,
+                             data=data,
+                             item_sz=item_sz,
+                             records_nr=records_nr,
+                             start_idx=start_idxes[col_idx], record_size=self._record_size)
+            dt_fmt = self._get_np_pack_format(self._record_format[col_idx])
+            dt = np.dtype(dt_fmt)
+            col_na = np.frombuffer(c_col_bytes[:item_sz * records_nr], dtype=dt)
+            col_nas.append(col_na)
+        return col_nas
+
+
+@cython.cfunc
+@cython.inline
+@cython.boundscheck(False)
+@cython.wraparound(False)
+cdef void _populate_column(unsigned char[] c_col_bytes,
+                           unsigned char[] data,
+                           item_sz: cython.int,
+                           records_nr: cython.int,
+                           start_idx: cython.int,
+                           record_size: cython.int):
+    with nogil:
+        i: cython.int = 0
+        item_idx: cython.int = 0
+        for i in range(records_nr):
+            item_idx = i * record_size + start_idx
+            memcpy(c_col_bytes + i * item_sz, data + item_idx, item_sz)

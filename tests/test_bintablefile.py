@@ -4,7 +4,7 @@ from decimal import Decimal
 from math import exp
 from pathlib import Path
 from time import time
-from unittest import TestCase
+from unittest import TestCase, skip
 
 import pandas as pd
 from pyxtension.streams import slist
@@ -141,7 +141,8 @@ class TestBinTableFile(TestCase):
         records = [(i,) for i in range(10)]
         record_file.extend(records)
         record_file.flush()
-        self.assertListEqual(list(record_file[2:5]), records[2:5])
+        sliced_records = list(record_file[2:5])
+        self.assertListEqual(sliced_records, records[2:5])
         self.assertListEqual(list(record_file[2:-2]), records[2:-2])
         self.assertListEqual(list(record_file[:5]), records[:5])
         self.assertListEqual(list(record_file[5:]), records[5:])
@@ -165,7 +166,6 @@ class TestBinTableFile(TestCase):
     def test_retrieve_header_without_metadata(self):
         record_format = (int, bool, float, Decimal)
         columns = ("int_col", "bool_col", "float_col", "Decimal_col")
-        metadata = {}
         record_file = BinTableFile(self.fpath, record_format=record_format, columns=columns, opener=open)
         e = Decimal("2.71828182845904509")
         records = [(1, True, 0.1, e), (2, False, -1.1, e)]
@@ -175,7 +175,7 @@ class TestBinTableFile(TestCase):
                                               opener=open)
         self.assertTupleEqual(record_file_no_columns.columns, columns)
         self.assertTupleEqual(record_file_no_columns.record_format, record_format)
-        self.assertDictEqual(record_file_no_columns.metadata, metadata)
+        self.assertIsNone(record_file_no_columns.metadata)
 
     def test_retrieve_header_with_big_metadata(self):
         record_format = (int, bool, float, Decimal)
@@ -194,6 +194,17 @@ class TestBinTableFile(TestCase):
         self.assertTupleEqual(record_file_no_columns.record_format, record_format)
         self.assertDictEqual(record_file_no_columns.metadata, metadata)
 
+    def test_init_file_with_corrupted_header(self):
+        corrupt_header_data = b'eSAMbin\x02\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06' \
+                              b'\x00\x00\x00\x00\x00\x00\x00\x07\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00' \
+                              b'\x00\x00\x00\x00\x00time,oint,in'
+        with open(self.fpath, 'wb') as f:
+            f.write(corrupt_header_data)
+
+        with self.assertRaises(EOFError):
+            record_file = BinTableFile(self.fpath, record_format=None, columns=None, metadata=None,
+                                                     opener=open)
+
     def test_retrieve_header_with_corrupted_file(self):
         corrupt_header_data = b'eSAMbin\x02\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06' \
                               b'\x00\x00\x00\x00\x00\x00\x00\x07\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00' \
@@ -201,9 +212,10 @@ class TestBinTableFile(TestCase):
         with open(self.fpath, 'wb') as f:
             f.write(corrupt_header_data)
 
-        with self.assertRaises(EOFError):
-            self.assertRaises(EOFError, BinTableFile(self.fpath, record_format=None, columns=None, metadata=None,
-                                                     opener=open))
+        with self.assertRaises(ValueError):
+            record_file = BinTableFile(self.fpath, record_format=None, columns=None, metadata=None,
+                                                     opener=open)
+            metadata = record_file.metadata
 
     def test_as_named_tuple_stream(self):
         record_format = (int, bool, float, Decimal)
@@ -343,7 +355,26 @@ class TestBinTableFile(TestCase):
         extracted_records = list(record_file)
         self.assertListEqual(records, extracted_records)
 
-    def test_as_df_nominal(self):
+    def test_as_df_without_decimal(self):
+        record_format = (int, bool, float, )
+        record_file = BinTableFile(self.fpath, record_format=record_format,
+                                   columns=("int", "bool", "float",))
+        MIN_INT = -(2 ** 63)
+        MAX_INT = 2 ** 63 - 1
+        ef = exp(1)
+        records = [(MAX_INT, True, ef, ), (MIN_INT, False, -1.1, )]
+        expected_records = [
+            [MAX_INT, True, ef],
+            [MIN_INT, False, -1.1],
+        ]
+        record_file.extend(records)
+        record_file.flush()
+        record_file = BinTableFile(self.fpath)
+        df = record_file.as_df()
+        self.assertListEqual(expected_records, df.values.tolist())
+
+    @skip("Decimal not implemented yet in as_df")
+    def test_as_df_with_decimal(self):
         record_format = (int, bool, float, Decimal)
         record_file = BinTableFile(self.fpath, record_format=record_format,
                                    columns=("int", "bool", "float", "Decimal"))
@@ -356,6 +387,24 @@ class TestBinTableFile(TestCase):
         expected_records = [
             [MAX_INT, True, ef, Decimal("-0.142857142857142857")],
             [MIN_INT, False, -1.1, Decimal("2.71828182845904509")],
+        ]
+        record_file.extend(records)
+        record_file.flush()
+        record_file = BinTableFile(self.fpath)
+        df = record_file.as_df()
+        self.assertListEqual(expected_records, df.values.tolist())
+
+    def test_as_df_no_dec(self):
+        record_format = (int, bool, float)
+        record_file = BinTableFile(self.fpath, record_format=record_format,
+                                   columns=("int", "bool", "float"))
+        MIN_INT = -(2 ** 63)
+        MAX_INT = 2 ** 63 - 1
+        ef = exp(1)
+        records = [(MAX_INT, True, ef, ), (MIN_INT, False, -1.1, )]
+        expected_records = [
+            [MAX_INT, True, ef,],
+            [MIN_INT, False, -1.1,],
         ]
         record_file.extend(records)
         record_file.flush()
@@ -400,14 +449,7 @@ class TestBinTableFile(TestCase):
         dt = time() - t0
         self.assertEqual(len(extracted_records), N)
         print(f"Reading {N} records took {dt:.4f} seconds")
-        t0 = time()
-        pickle.dump(extracted_records, open(self.fpath.with_suffix(".pkl"), "wb"))
-        dt = time() - t0
-        print(f"Pickling {N} records took {dt:.4f} seconds")
-        t0 = time()
-        pickle.load(open(self.fpath.with_suffix(".pkl"), "rb"))
-        dt = time() - t0
-        print(f"Unpickling {N} records took {dt:.4f} seconds")
+
 
     def test_performance_df_read_write(self):
         N = 1_000
@@ -416,11 +458,21 @@ class TestBinTableFile(TestCase):
         t0 = time()
         BinTableFile.save_df(df, fpath=self.fpath, buf_size=4096)
         dt = time() - t0
-        print(f"Writing {N} records took {dt:.4f} seconds")
+        print(f"Writing DF {N} records took {dt:.4f} seconds")
         t0 = time()
         record_file = BinTableFile(self.fpath)
-        extracted_records = list(record_file)
+
         df = record_file.as_df()
         dt = time() - t0
         print(f"Reading {N} records took {dt:.4f} seconds")
         self.assertEqual(len(df.index), N)
+        t0 = time()
+        with open(self.fpath.with_suffix(".pkl"), "wb") as f:
+            pickle.dump(df, f)
+        dt = time() - t0
+        print(f"Pickling {N} records took {dt:.4f} seconds")
+        t0 = time()
+        with open(self.fpath.with_suffix(".pkl"), "rb") as f:
+            unpickled_df = pickle.load(f)
+        dt = time() - t0
+        print(f"Unpickling {N} records took {dt:.4f} seconds")
