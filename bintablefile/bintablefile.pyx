@@ -1,3 +1,5 @@
+# cython: language_level=3, boundscheck=False, binding=False, wraparound=False, initializedcheck=False, cdivision=True, c_string_type=bytes, c_string_encoding=ascii, nonecheck=False, overflowcheck=False
+
 import gzip
 import io
 import itertools
@@ -410,7 +412,7 @@ class BinTableFile(list):
             step = 1
         if start is None:
             start = 0
-        record_size:cython.int = self._record_size
+        record_size: cython.int = self._record_size
         with self._opener(self._fpath, mode="rb") as f:
             self._fh = f
             seek_pos = record_size * start + self._header_sz
@@ -606,16 +608,11 @@ class BinTableFile(list):
         return col_nas
 
 
-@cython.cfunc
 @cython.inline
 @cython.boundscheck(False)
 @cython.wraparound(False)
-cdef void _populate_column(unsigned char[] c_col_bytes,
-                           unsigned char[] data,
-                           item_sz: cython.int,
-                           records_nr: cython.int,
-                           start_idx: cython.int,
-                           record_size: cython.int):
+cpdef void _populate_column(unsigned char[] c_col_bytes, unsigned char[] data, item_sz: cython.int,
+                            records_nr: cython.int, start_idx: cython.int, record_size: cython.int):
     with nogil:
         i: cython.int = 0
         item_idx: cython.int = 0

@@ -8,7 +8,7 @@ from unittest import TestCase, skip
 
 import pandas as pd
 from pyxtension.streams import slist
-
+import pyximport; pyximport.install()
 from bintablefile import BinTableFile
 
 
