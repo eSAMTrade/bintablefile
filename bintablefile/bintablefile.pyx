@@ -4,6 +4,7 @@ import gzip
 import io
 import itertools
 import struct
+from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import (
@@ -28,12 +29,8 @@ from libc.string cimport memcpy
 from pydantic import BaseModel, Extra, validator
 from pydantic import PositiveInt, conint, validate_arguments
 from pyxtension import validate
+from typing import Callable
 
-try:
-    import typing
-    import dataclasses
-except ImportError:
-    pass  # The modules don't actually have to exists for Cython to use them as annotations
 _K = TypeVar('_K')
 RecType = TypeVar("RecType", int, Decimal, float, bool, np.int64, np.float64, np.bool_)
 RecTypeType = Union[Type[int], Type[float], Type[Decimal], Type[bool], Type[np.int64], Type[np.float64], Type[np.bool_]]
@@ -49,6 +46,40 @@ def open_by_extension(file: Path, *args, **kwargs) -> IO:
         return IdzipFile(file, *args, **kwargs)
     else:
         return open(file, *args, **kwargs)
+
+def create_stream_opener(stream: io.BytesIO) -> Callable[[Any, ...], IO]:
+    @contextmanager
+    def managed_resource(*args, mode:str="rb", **kwds) -> Generator[io.BufferedIOBase, None, None]:
+        mode_set = frozenset(mode)
+        validate(not mode_set-frozenset("abrwx+"), f"Invalid mode {mode}", ValueError)
+        writeable = False
+        if 'a' in mode_set:
+            validate(frozenset('rw').isdisjoint(mode_set), f"Invalid mode {mode}", ValueError)
+            stream.seek(io.SEEK_END)
+            writeable = True
+        elif 'w' in mode_set:
+            stream.seek(0)
+            stream.truncate()
+            writeable = True
+        elif '+' in mode_set:
+            validate('r' in mode_set, "Can't open stream for writing without read access", ValueError)
+            stream.seek(0)
+            writeable = True
+        elif 'x' in mode_set:
+            validate(stream.tell() == 0, "Can't open stream for writing without read access", ValueError)
+            stream.seek(0)
+            writeable = True
+        else:
+            validate('r' in mode_set, "Invalid mode", ValueError)
+            stream.seek(0)
+
+        try:
+            yield stream
+            if writeable:
+                stream.flush()
+        finally:
+            pass
+    return managed_resource
 
 
 class _RecordStructure(BaseModel):
@@ -167,7 +198,7 @@ class BinTableFile(list):
     TYPE_DECODING: Dict[str, RecType] = {k.__name__: k for k in (int, float, Decimal, bool)}
     BUILTIN_TYPES_MAP = {np.int64: int, np.float64: float, np.bool_: bool}
     BINARY_FORMAT = 'bin'
-    VERSION = 2
+    VERSION = 3
 
     SIGNATURE = 'eSAM'
     BUF_SZ = 4096

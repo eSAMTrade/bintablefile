@@ -1,5 +1,7 @@
+import io
 import pickle
 import tempfile
+import traceback
 from decimal import Decimal
 from math import exp
 from pathlib import Path
@@ -7,9 +9,18 @@ from time import time
 from unittest import TestCase, skip
 
 import pandas as pd
+import pyximport;
 from pyxtension.streams import slist
-import pyximport; pyximport.install()
-from bintablefile import BinTableFile
+
+pyximport.install()
+from bintablefile import BinTableFile, create_stream_opener
+
+
+class MyBytes(io.BytesIO):
+    def close(self):
+        print("Close called")
+        traceback.print_stack()
+        super().close()
 
 
 class TestBinTableFile(TestCase):
@@ -194,8 +205,8 @@ class TestBinTableFile(TestCase):
         self.assertTupleEqual(record_file_no_columns.record_format, record_format)
         self.assertDictEqual(record_file_no_columns.metadata, metadata)
 
-    def test_init_file_with_corrupted_header(self):
-        corrupt_header_data = b'eSAMbin\x02\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06' \
+    def test_init_file_with_incomplete_file(self):
+        corrupt_header_data = b'eSAMbin\x03\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06' \
                               b'\x00\x00\x00\x00\x00\x00\x00\x07\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00' \
                               b'\x00\x00\x00\x00\x00time,oint,in'
         with open(self.fpath, 'wb') as f:
@@ -203,7 +214,45 @@ class TestBinTableFile(TestCase):
 
         with self.assertRaises(EOFError):
             record_file = BinTableFile(self.fpath, record_format=None, columns=None, metadata=None,
-                                                     opener=open)
+                                       opener=open)
+
+    def test_init_file_with_wrong_version(self):
+        corrupt_header_data = b'eSAMbin\x02\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06' \
+                              b'\x00\x00\x00\x00\x00\x00\x00\x07\x00\x00\x00\x00\x00\x00\x00\x17\x00\x00' \
+                              b'\x00\x00\x00\x00\x00time,oint,in'
+        with open(self.fpath, 'wb') as f:
+            f.write(corrupt_header_data)
+
+        with self.assertRaises(ValueError):
+            record_file = BinTableFile(self.fpath, record_format=None, columns=None, metadata=None,
+                                       opener=open)
+
+    def test_init_file_with_memory_stream(self):
+        buf = io.BytesIO()
+        opener = create_stream_opener(buf)
+        record_format = (int, bool, float, Decimal)
+        record_file = BinTableFile(self.fpath, record_format=record_format,
+                                   columns=("int", "bool", "float", "Decimal"), opener=opener)
+        high_prec_decimal = -Decimal(1) / Decimal(7)
+        MIN_INT = -(2 ** 63)
+        MAX_INT = 2 ** 63 - 1
+        ef = exp(1)
+        e = Decimal.from_float(ef)
+        records = [(MAX_INT, True, ef, high_prec_decimal), (MIN_INT, False, -1.1, e)]
+        expected_records = [
+            (MAX_INT, True, ef, Decimal("-0.142857142857142857")),
+            (MIN_INT, False, -1.1, Decimal("2.71828182845904509")),
+        ]
+        record_file.extend(records)
+        record_file.flush()
+        bin_data = buf.getvalue()
+        self.assertEqual(bin_data[0:8], b'eSAMbin\x03')
+        buf = io.BytesIO(bin_data)
+        opener = create_stream_opener(buf)
+        record_file = BinTableFile(self.fpath, record_format=None, columns=None, opener=opener)
+        self.assertTupleEqual(record_file.columns, ("int", "bool", "float", "Decimal"))
+        self.assertTupleEqual(record_file.record_format, (int, bool, float, Decimal))
+        self.assertListEqual(list(record_file), expected_records)
 
     def test_retrieve_header_with_corrupted_file(self):
         corrupt_header_data = b'eSAMbin\x02\x10\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x06' \
@@ -214,7 +263,7 @@ class TestBinTableFile(TestCase):
 
         with self.assertRaises(ValueError):
             record_file = BinTableFile(self.fpath, record_format=None, columns=None, metadata=None,
-                                                     opener=open)
+                                       opener=open)
             metadata = record_file.metadata
 
     def test_as_named_tuple_stream(self):
@@ -356,13 +405,13 @@ class TestBinTableFile(TestCase):
         self.assertListEqual(records, extracted_records)
 
     def test_as_df_without_decimal(self):
-        record_format = (int, bool, float, )
+        record_format = (int, bool, float,)
         record_file = BinTableFile(self.fpath, record_format=record_format,
                                    columns=("int", "bool", "float",))
         MIN_INT = -(2 ** 63)
         MAX_INT = 2 ** 63 - 1
         ef = exp(1)
-        records = [(MAX_INT, True, ef, ), (MIN_INT, False, -1.1, )]
+        records = [(MAX_INT, True, ef,), (MIN_INT, False, -1.1,)]
         expected_records = [
             [MAX_INT, True, ef],
             [MIN_INT, False, -1.1],
@@ -401,7 +450,7 @@ class TestBinTableFile(TestCase):
         MIN_INT = -(2 ** 63)
         MAX_INT = 2 ** 63 - 1
         ef = exp(1)
-        records = [(MAX_INT, True, ef, ), (MIN_INT, False, -1.1, )]
+        records = [(MAX_INT, True, ef,), (MIN_INT, False, -1.1,)]
         expected_records = [
             [MAX_INT, True, ef,],
             [MIN_INT, False, -1.1,],
@@ -449,7 +498,6 @@ class TestBinTableFile(TestCase):
         dt = time() - t0
         self.assertEqual(len(extracted_records), N)
         print(f"Reading {N} records took {dt:.4f} seconds")
-
 
     def test_performance_df_read_write(self):
         N = 1_000
