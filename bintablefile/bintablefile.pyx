@@ -114,9 +114,7 @@ class _RecordStructure(BaseModel):
                 sz = 1
             elif issubclass(_type, np.int8):
                 sz = 1
-            elif issubclass(_type, int):
-                sz = 8
-            elif issubclass(_type, float):
+            elif issubclass(_type, (int, np.int64, float, np.float64)):
                 sz = 8
             elif issubclass(_type, Decimal):
                 sz = 9
@@ -197,8 +195,9 @@ class BinTableFile(list):
     SIZE_BY_TYPE = {int: 8, bool: 1, float: 8, Decimal: 9}
     DECIMAL_STORE_PREC = 18
     SCALE_FACTOR = 10 ** DECIMAL_STORE_PREC
-    TYPE_DECODING: Dict[str, RecType] = {k.__name__: k for k in (int, float, Decimal, bool, np.int8)}
-    BUILTIN_TYPES_MAP = {np.int64: int, np.float64: float, np.bool_: bool, np.int8: np.int8}
+    TYPE_DECODING: Dict[str, RecType] = {k.__name__: k for k in
+                                         (int, float, Decimal, bool, np.int8, np.int64, np.float64)}
+    BUILTIN_TYPES_MAP = {np.int64: np.int64, np.float64: np.float64, np.bool_: bool, np.int8: np.int8}
     BINARY_FORMAT = 'bin'
     VERSION = 3
 
@@ -370,6 +369,14 @@ class BinTableFile(list):
                 decoded = struct.unpack_from("b", buffer, index)
                 items.append(np.int8(decoded[0]))
                 index += 1
+            elif issubclass(_type, np.int64):
+                decoded = struct.unpack_from("q", buffer, index)
+                items.append(np.int64(decoded[0]))
+                index += 8
+            elif issubclass(_type, np.float64):
+                decoded = struct.unpack_from("d", buffer, index)
+                items.append(np.float64(decoded[0]))
+                index += 8
             elif issubclass(_type, int):
                 decoded = struct.unpack_from("q", buffer, index)
                 items.append(decoded[0])
@@ -590,14 +597,15 @@ class BinTableFile(list):
         with opener(fpath, mode="wb") as f:
             f.write(header_data)
             f.write(encoded_metadata)
-            data = df.to_numpy()
-            records_nr = len(data)
+            data = [r for r in zip(*(df[col] for col in df))]
             i = 0
             while i < records_nr:
                 chunk_size = min(records_nr - i, buf_size)
                 chunk = data[i:i + chunk_size]
                 chunk_format = '<' + format[1:] * chunk_size
-                f.write(struct.pack(chunk_format, *chunk.flatten()))
+                print([c.__class__ for c in itertools.chain.from_iterable(chunk)])
+                flatten_chunk = itertools.chain.from_iterable(chunk)
+                f.write(struct.pack(chunk_format, *flatten_chunk))
                 i += chunk_size
             f.flush()
 

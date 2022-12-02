@@ -1,4 +1,4 @@
-__VERSION__ = "2.2.1"
+__VERSION__ = "2.2.2"
 
 from distutils.command.build import build as build_orig
 
