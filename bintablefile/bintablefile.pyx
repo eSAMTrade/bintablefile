@@ -603,7 +603,6 @@ class BinTableFile(list):
                 chunk_size = min(records_nr - i, buf_size)
                 chunk = data[i:i + chunk_size]
                 chunk_format = '<' + format[1:] * chunk_size
-                print([c.__class__ for c in itertools.chain.from_iterable(chunk)])
                 flatten_chunk = itertools.chain.from_iterable(chunk)
                 f.write(struct.pack(chunk_format, *flatten_chunk))
                 i += chunk_size
