@@ -1,26 +1,19 @@
 import io
 import pickle
 import tempfile
-import traceback
 from decimal import Decimal
 from math import exp
 from pathlib import Path
 from time import time
 from unittest import TestCase, skip
 
+import numpy as np
 import pandas as pd
-import pyximport;
+import pyximport; pyximport.install()
 from pyxtension.streams import slist
 
-pyximport.install()
+
 from bintablefile import BinTableFile, create_stream_opener
-
-
-class MyBytes(io.BytesIO):
-    def close(self):
-        print("Close called")
-        traceback.print_stack()
-        super().close()
 
 
 class TestBinTableFile(TestCase):
@@ -404,6 +397,30 @@ class TestBinTableFile(TestCase):
         extracted_records = list(record_file)
         self.assertListEqual(records, extracted_records)
 
+    def test_save_df_with_int8(self):
+        buf = io.BytesIO()
+        write_opener = create_stream_opener(buf)
+
+        records = [(1, True, 0.1, 1), (2, False, -0.1, 2), (3, True, 0.2, 3)]
+        df = pd.DataFrame(records, columns=["int_col", "bool_col", "float_col", "int8_col"])
+        df= df.astype({"int8_col": "int8"})
+        BinTableFile.save_df(df, fpath='', opener=write_opener)
+        bin_data = buf.getvalue()
+
+        written_buf = io.BytesIO(bin_data)
+        read_opener = create_stream_opener(written_buf)
+        record_file = BinTableFile(self.fpath, record_format=None, columns=None, opener=read_opener)
+        read_df = record_file.as_df()
+        self.assertListEqual(list(df.dtypes), list(read_df.dtypes))
+
+        read_opener = create_stream_opener(written_buf)
+        record_file = BinTableFile(self.fpath, record_format=None, columns=None, opener=read_opener)
+        read_records = list(record_file)
+        self.assertEqual(3, len(read_records))
+        self.assertTupleEqual(read_records[-1], read_records[-1])
+        self.assertIsInstance(read_records[-1][3], np.int8)
+        self.assertEqual(read_records[-1][3], np.int8(3))
+
     def test_as_df_without_decimal(self):
         record_format = (int, bool, float,)
         record_file = BinTableFile(self.fpath, record_format=record_format,
@@ -454,6 +471,24 @@ class TestBinTableFile(TestCase):
         expected_records = [
             [MAX_INT, True, ef,],
             [MIN_INT, False, -1.1,],
+        ]
+        record_file.extend(records)
+        record_file.flush()
+        record_file = BinTableFile(self.fpath)
+        df = record_file.as_df()
+        self.assertListEqual(expected_records, df.values.tolist())
+
+    def test_as_df_with_int8(self):
+        record_format = (int, bool, float)
+        record_file = BinTableFile(self.fpath, record_format=record_format,
+                                   columns=("int", "bool", "float"))
+        MIN_INT = -(2 ** 63)
+        MAX_INT = 2 ** 63 - 1
+        ef = exp(1)
+        records = [(MAX_INT, True, ef,), (MIN_INT, False, -1.1,)]
+        expected_records = [
+            [MAX_INT, True, ef, ],
+            [MIN_INT, False, -1.1, ],
         ]
         record_file.extend(records)
         record_file.flush()

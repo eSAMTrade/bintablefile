@@ -33,7 +33,7 @@ from typing import Callable
 
 _K = TypeVar('_K')
 RecType = TypeVar("RecType", int, Decimal, float, bool, np.int64, np.float64, np.bool_)
-RecTypeType = Union[Type[int], Type[float], Type[Decimal], Type[bool], Type[np.int64], Type[np.float64], Type[np.bool_]]
+RecTypeType = Union[Type[int], Type[float], Type[Decimal], Type[bool], Type[np.int64], Type[np.int8], Type[np.float64], Type[np.bool_]]
 Record = Tuple[RecType, ...]
 
 def open_by_extension(file: Path, *args, **kwargs) -> IO:
@@ -111,6 +111,8 @@ class _RecordStructure(BaseModel):
             _type = record_format[i]
             start_idxes[i] = index
             if issubclass(_type, bool):
+                sz = 1
+            elif issubclass(_type, np.int8):
                 sz = 1
             elif issubclass(_type, int):
                 sz = 8
@@ -195,8 +197,8 @@ class BinTableFile(list):
     SIZE_BY_TYPE = {int: 8, bool: 1, float: 8, Decimal: 9}
     DECIMAL_STORE_PREC = 18
     SCALE_FACTOR = 10 ** DECIMAL_STORE_PREC
-    TYPE_DECODING: Dict[str, RecType] = {k.__name__: k for k in (int, float, Decimal, bool)}
-    BUILTIN_TYPES_MAP = {np.int64: int, np.float64: float, np.bool_: bool}
+    TYPE_DECODING: Dict[str, RecType] = {k.__name__: k for k in (int, float, Decimal, bool, np.int8)}
+    BUILTIN_TYPES_MAP = {np.int64: int, np.float64: float, np.bool_: bool, np.int8: np.int8}
     BINARY_FORMAT = 'bin'
     VERSION = 3
 
@@ -326,7 +328,7 @@ class BinTableFile(list):
         for _type in record_format:
             if issubclass(_type, Decimal):
                 total_bytes += 9
-            elif issubclass(_type, (bool, np.bool_)):
+            elif issubclass(_type, (bool, np.bool_, np.int8,)):
                 total_bytes += 1
             elif issubclass(_type, (int, float, np.int64, np.float64)):
                 # encode as "long long/double/unsigned long long" [use q/d/Q for pack() ]
@@ -363,6 +365,10 @@ class BinTableFile(list):
             if issubclass(_type, bool):
                 decoded = struct.unpack_from("?", buffer, index)
                 items.append(decoded[0])
+                index += 1
+            elif issubclass(_type, np.int8):
+                decoded = struct.unpack_from("b", buffer, index)
+                items.append(np.int8(decoded[0]))
                 index += 1
             elif issubclass(_type, int):
                 decoded = struct.unpack_from("q", buffer, index)
@@ -537,6 +543,8 @@ class BinTableFile(list):
                 format += "d"
             elif issubclass(_type, Decimal):
                 format += "qb"
+            elif issubclass(_type, np.int8):
+                format += "b"
             else:
                 raise ValueError(f"Unknown type [{_type!s}] for record")
         return format
@@ -545,6 +553,8 @@ class BinTableFile(list):
     def _get_np_pack_format(_type: RecTypeType) -> str:
         if issubclass(_type, (bool, np.bool_)):
             format = "?"
+        elif issubclass(_type, np.int8):
+            format = "b"
         elif issubclass(_type, (int, np.int64)):
             format = "<i8"
         elif issubclass(_type, (float, np.float64)):
@@ -573,7 +583,6 @@ class BinTableFile(list):
         else:
             encoded_metadata = b''
             metadata_size = 0
-        record_size = BinTableFile._compute_record_size_in_bytes(record_format)
 
         header = _Header(columns=columns, types=builtin_record_format, record_size=record_size,
                          records_nr=records_nr, metadata_size=metadata_size)
