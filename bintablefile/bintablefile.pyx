@@ -18,7 +18,7 @@ from typing import (
     TypeVar,
     Dict,
     Type,
-    NamedTuple, List, )
+    NamedTuple, List)
 
 import cython
 import msgpack
@@ -26,8 +26,12 @@ import numpy as np
 import pandas as pd
 from libc.stdlib cimport malloc
 from libc.string cimport memcpy
-from pydantic import BaseModel, Extra, validator
-from pydantic import PositiveInt, conint, validate_arguments
+
+try:
+    # pydantic 2.x is not backward compatible with pydantic 1.x, so we try to import v1 first, and if it fails, then means we have v1 version already
+    from pydantic.v1 import BaseModel, Extra, validator, PositiveInt, conint, validate_arguments
+except ImportError:
+    from pydantic import BaseModel, Extra, validator, PositiveInt, conint, validate_arguments
 from pyxtension import validate
 from typing import Callable
 
@@ -49,9 +53,9 @@ def open_by_extension(file: Path, *args, **kwargs) -> IO:
 
 def create_stream_opener(stream: io.BytesIO) -> Callable[[Any, ...], IO]:
     @contextmanager
-    def managed_resource(*args, mode:str="rb", **kwds) -> Generator[io.BufferedIOBase, None, None]:
+    def managed_resource(*args, mode: str = "rb", **kwds) -> Generator[io.BufferedIOBase, None, None]:
         mode_set = frozenset(mode)
-        validate(not mode_set-frozenset("abrwx+"), f"Invalid mode {mode}", ValueError)
+        validate(not mode_set - frozenset("abrwx+"), f"Invalid mode {mode}", ValueError)
         writeable = False
         if 'a' in mode_set:
             validate(frozenset('rw').isdisjoint(mode_set), f"Invalid mode {mode}", ValueError)
@@ -444,7 +448,7 @@ class BinTableFile(list):
             return self._header.records_nr
 
         f.seek(0, io.SEEK_END)
-        file_sz = f.tell() - self._header_sz
+        file_sz = f.tell() - self._header_sz - self._header.metadata_size
         validate(file_sz % self._record_size == 0, f"The file {self._fpath} is corrupted", IOError)
         return file_sz // self._record_size
 

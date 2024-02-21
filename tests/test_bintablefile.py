@@ -9,9 +9,10 @@ from unittest import TestCase, skip
 
 import numpy as np
 import pandas as pd
-import pyximport; pyximport.install()
-from pyxtension.streams import slist
+import pyximport;
 
+pyximport.install()
+from pyxtension.streams import slist
 
 from bintablefile import BinTableFile, create_stream_opener
 
@@ -29,7 +30,7 @@ class TestBinTableFile(TestCase):
     def tearDown(self) -> None:
         self._tmp_dirpath.cleanup()
 
-    def test_nominal_read_write(self):
+    def test_nominal_read_write_from_the_sameobject(self):
         record_format = (int, bool, float, Decimal)
         record_file = BinTableFile(self.fpath, record_format=record_format,
                                    columns=("int", "bool", "float", "Decimal"), opener=open)
@@ -45,8 +46,56 @@ class TestBinTableFile(TestCase):
         ]
         record_file.extend(records)
         record_file.flush()
+
         extracted_records = list(record_file)
         self.assertListEqual(expected_records, extracted_records)
+
+    def test_nominal_write_file_read_file(self):
+        record_format = (int, bool, float, Decimal)
+        record_file = BinTableFile(self.fpath, record_format=record_format,
+                                   columns=("int", "bool", "float", "Decimal"), opener=open)
+        high_prec_decimal = -Decimal(1) / Decimal(7)
+        MIN_INT = -(2 ** 63)
+        MAX_INT = 2 ** 63 - 1
+        ef = exp(1)
+        e = Decimal.from_float(ef)
+        records = [(MAX_INT, True, ef, high_prec_decimal), (MIN_INT, False, -1.1, e)]
+        expected_records = [
+            (MAX_INT, True, ef, Decimal("-0.142857142857142857")),
+            (MIN_INT, False, -1.1, Decimal("2.71828182845904509")),
+        ]
+        record_file.extend(records)
+        record_file.flush()
+
+        new_record_file = BinTableFile(self.fpath)
+        extracted_records = list(new_record_file)
+        self.assertListEqual(expected_records, extracted_records)
+
+
+    def test_nominal_write_file_with_metadata_read_file(self):
+        record_format = (int, bool, float, Decimal)
+        metadata = {"b": "test_mock", "a": 1, "c": 2.0, "d": [1, 2]}
+
+        record_file = BinTableFile(self.fpath, record_format=record_format,
+                                   columns=("int", "bool", "float", "Decimal"), opener=open, metadata=metadata)
+        high_prec_decimal = -Decimal(1) / Decimal(7)
+        MIN_INT = -(2 ** 63)
+        MAX_INT = 2 ** 63 - 1
+        ef = exp(1)
+        e = Decimal.from_float(ef)
+        records = [(MAX_INT, True, ef, high_prec_decimal), (MIN_INT, False, -1.1, e)]
+        expected_records = [
+            (MAX_INT, True, ef, Decimal("-0.142857142857142857")),
+            (MIN_INT, False, -1.1, Decimal("2.71828182845904509")),
+        ]
+        record_file.extend(records)
+        record_file.flush()
+
+        # Open and read the same file
+        new_record_file = BinTableFile(self.fpath)
+        extracted_records = list(new_record_file)
+        self.assertListEqual(expected_records, extracted_records)
+        self.assertDictEqual(metadata, new_record_file.metadata)
 
     def test_decimal_is_rounded(self):
         record_format = (Decimal,)
@@ -401,9 +450,9 @@ class TestBinTableFile(TestCase):
         buf = io.BytesIO()
         write_opener = create_stream_opener(buf)
 
-        records = [(1, 1, 1,1., 1.), (2, 2, 2,2.,2.), (3, 3, 3,3.,3.)]
+        records = [(1, 1, 1, 1., 1.), (2, 2, 2, 2., 2.), (3, 3, 3, 3., 3.)]
         df = pd.DataFrame(records, columns=["int_col", "int8_col", "int64_col", "float_col", "float64_col"])
-        df= df.astype({"int8_col": "int8", "int64_col": "int64", "float64_col": "float64"})
+        df = df.astype({"int8_col": "int8", "int64_col": "int64", "float64_col": "float64"})
         BinTableFile.save_df(df, fpath='', opener=write_opener)
         bin_data = buf.getvalue()
 
@@ -472,8 +521,8 @@ class TestBinTableFile(TestCase):
         ef = exp(1)
         records = [(MAX_INT, True, ef,), (MIN_INT, False, -1.1,)]
         expected_records = [
-            [MAX_INT, True, ef,],
-            [MIN_INT, False, -1.1,],
+            [MAX_INT, True, ef, ],
+            [MIN_INT, False, -1.1, ],
         ]
         record_file.extend(records)
         record_file.flush()
