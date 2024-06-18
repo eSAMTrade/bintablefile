@@ -3,3 +3,4 @@ wheel
 twine
 python-idzip>=0.3.6
 pydantic >= 2.0.0
+urllib3>=2.2.2 # not directly required, pinned by Snyk to avoid a vulnerability
