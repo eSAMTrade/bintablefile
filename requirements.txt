@@ -3,3 +3,4 @@ pandas>=0.23.0
 pydantic>=1.6
 pyxtension>=1.12
 msgpack>=0.5.0
+zipp>=3.19.1 # not directly required, pinned by Snyk to avoid a vulnerability
