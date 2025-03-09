@@ -5,16 +5,16 @@ name: Python package
 
 on:
   push: # run on all branches
-    branches: [ '**' ]
+#    branches: [ '**' ]
     #[ $default-branch ]
   pull_request:
-    branches: [ '**' ]
+    branches: [ $default-branch ]
     #[ $default-branch ]
 
 jobs:
   build:
 
-    runs-on: ubuntu-latest
+    runs-on: [ubuntu-latest, windows-latest, macos-latest]
     strategy:
       fail-fast: false
       matrix:
