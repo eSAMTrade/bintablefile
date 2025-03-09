@@ -1,4 +1,6 @@
 # Binary Table File format 
+[![Build Status](https://github.com/eSAMTrade/bintablefile/actions/workflows/python-package.yml/badge.svg?branch=main)](https://github.com/eSAMTrade/bintablefile/actions/workflows/python-package.yml)
+
 
 ## Binary Table File - efficient binary file format to store and retrieve tabular data
 
@@ -22,3 +24,9 @@ The library can be found on [PyPi](https://pypi.org/project/bintablefile/): http
 
  
 **Note**: We release directly v2.0 as v1.0 was used just internally and was not released to PyPI. The major improvement of V2 is a full-featured header, that allows to store metadata about the table, as well as store the number of records for ReadOnly compression formats like `idzip`.
+
+
+### Local development build
+```bash
+pip install -e ".[dev]"
+```

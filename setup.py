@@ -13,7 +13,10 @@ class build(build_orig):
 
     def finalize_options(self):
         super().finalize_options()
-        __builtins__.__NUMPY_SETUP__ = False
+        try:
+            __builtins__.__NUMPY_SETUP__ = False
+        except AttributeError:
+            print("Numpy is not installed, skipping numpy include dir")
         import numpy
         for extension in self.distribution.ext_modules:
             extension.include_dirs.append(numpy.get_include())
@@ -33,6 +36,8 @@ with open("requirements.txt") as fp:
 
 with open("requirements-dev.txt") as fp:
     dev_requires = fp.read().strip().split("\n")
+    # ignore the lines that starts with '#' or '-r '
+    dev_requires = [line for line in dev_requires if line and not line.startswith(("#", "-r"))]
 
 setup(
     ext_modules=exts,
