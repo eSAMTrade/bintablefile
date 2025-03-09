@@ -33,6 +33,8 @@ with open("requirements.txt") as fp:
 
 with open("requirements-dev.txt") as fp:
     dev_requires = fp.read().strip().split("\n")
+     # ignore the lines that starts with '#' or '-r '
+    dev_requires = [line for line in dev_requires if line and not line.startswith(("#", "-r"))]
 
 setup(
     ext_modules=exts,
