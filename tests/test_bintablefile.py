@@ -30,6 +30,52 @@ class TestBinTableFile(TestCase):
     def tearDown(self) -> None:
         self._tmp_dirpath.cleanup()
 
+    def test_structure(self):
+        import ctypes
+
+        def create_structure(fields):
+            """
+            Dynamically creates a ctypes.Structure subclass with given fields.
+
+            :param fields: A list of tuples where each tuple contains the field name and ctype data type
+            :return: A new ctypes.Structure subclass with the specified fields
+            """
+
+            class DynamicStructure(ctypes.Structure):
+                _fields_ = fields
+
+            return DynamicStructure
+
+        def create_structure_array(struct_cls, n):
+            """
+            Creates an array of ctypes.Structure of type struct_cls with n elements.
+
+            :param struct_cls: The ctypes.Structure subclass
+            :param n: The number of elements in the array
+            :return: An instance of the ctypes.Array filled with structures of type struct_cls
+            """
+            return (struct_cls * n)()
+
+        # Example usage:
+
+        # Define the list of field names and their ctypes types
+        fields = [
+            ('id', ctypes.c_int),
+            ('value', ctypes.c_float),
+            ('name', ctypes.c_char * 20)  # Example of a 20-char string
+        ]
+
+        # Dynamically create the structure and array of structures
+        DynamicStruct = create_structure(fields)
+        StructArray = create_structure_array(DynamicStruct, 5)  # Create an array of 5 elements
+
+        # Example of how to use the array
+        StructArray[0].id = 1
+        StructArray[0].value = 3.14
+        StructArray[0].name = b"Example"
+
+        print(StructArray[0].id, StructArray[0].value, StructArray[0].name)
+
     def test_nominal_read_write_from_the_sameobject(self):
         record_format = (int, bool, float, Decimal)
         record_file = BinTableFile(self.fpath, record_format=record_format,
