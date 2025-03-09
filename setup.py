@@ -17,7 +17,9 @@ class build(build_orig):
             __builtins__.__NUMPY_SETUP__ = False
         except AttributeError:
             print("Numpy is not installed, skipping numpy include dir")
+
         import numpy
+
         for extension in self.distribution.ext_modules:
             extension.include_dirs.append(numpy.get_include())
         from Cython.Build import cythonize
