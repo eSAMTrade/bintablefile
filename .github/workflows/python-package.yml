@@ -4,16 +4,16 @@
 name: Python package
 
 on:
-  push: # run on all branches
-    branches: [ '**' ]
-    #[ $default-branch ]
+#  push: # run on all branches
+#    branches: [ '**' ]
+#    #[ $default-branch ]
   pull_request:
     branches: [ '**' ]
     #[ $default-branch ]
 
 jobs:
   build:
-    runs-on: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -52,12 +52,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install flake8 pytest
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-          python setup.py build_ext --inplace
+#          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+          pip install -e ".[dev]"
       - name: Lint with flake8 in container
         run: |
           flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
           flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-      - name: Test with pytest in container
+      - name: Run unittests in container
         run: |
           python -m unittest discover -s tests
