@@ -1,4 +1,5 @@
 # Binary Table File format 
+[![Build Status](https://github.com/eSAMTrade/bintablefile/actions/workflows/python-package.yml/badge.svg?branch=main)](https://github.com/eSAMTrade/bintablefile/actions/workflows/python-package.yml)
 
 ## Binary Table File - efficient binary file format to store and retrieve tabular data
 
